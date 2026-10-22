@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Sound of a Name</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#0c0b10;color:#ecebf2;font-family:system-ui,sans-serif}
+#app{display:flex;height:100%}
+#panel{width:350px;padding:18px;border-right:1px solid #24222e;overflow:auto;flex-shrink:0}
+h1{font-size:16px;margin:0 0 4px}
+.sub{font-size:12px;opacity:.6}
+label{display:block;margin:12px 0 5px;font-size:12px;opacity:.75}
+input[type=text]{width:100%;padding:8px;background:#16141d;color:inherit;border:1px solid #2e2b3a;border-radius:6px;font-size:14px}
+.btns{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+button{flex:1;padding:9px 10px;background:#2b2740;color:inherit;border:1px solid #3d3860;border-radius:6px;cursor:pointer;font-size:13px}
+button.primary{background:#e8c26a;color:#16120a;border-color:#e8c26a;font-weight:600}
+.row{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px}
+#nameDisp{font-size:30px;letter-spacing:.08em;margin:14px 0 4px;word-break:break-word;line-height:1.2}
+#nameDisp span{opacity:.45}
+#nameDisp span.on{opacity:1;color:#e8c26a}
+.box{margin-top:12px;padding:10px;border:1px solid #2a2836;border-radius:8px;font-size:12px;line-height:1.6}
+.box h2{font-size:12px;margin:0 0 6px;opacity:.7;font-weight:600;text-transform:uppercase;letter-spacing:.08em}
+.lg{display:flex;align-items:center;gap:8px;margin:4px 0}
+#seq{margin-top:6px;font-family:ui-monospace,monospace;font-size:11px;line-height:1.7;max-height:90px;overflow:auto;opacity:.85}
+#seq span{padding:0 2px;border-radius:3px}
+#seq span.cur{background:#e8c26a;color:#16120a}
+#info,#map{font-family:ui-monospace,monospace;font-size:11px;opacity:.85;line-height:1.65}
+#stage{flex:1;min-width:0}
+canvas{width:100%;height:100%;display:block}
+@media(max-width:760px){#app{flex-direction:column}#panel{width:100%;border-right:0;border-bottom:1px solid #24222e;max-height:50%}#stage{min-height:300px}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="panel">
+    <h1>The Sound of a Name</h1>
+    <div class="sub">Letters become numbers. Each number's Fibonacci loop (mod n) becomes the chords, bass, lead and drum variations of a song.</div>
+    <label>Name</label>
+    <input type="text" id="name" value="maya ramesh" autocomplete="off">
+    <div id="nameDisp"></div>
+    <div class="box"><h2>Now playing</h2><div id="now">Press Play</div><div id="seq"></div></div>
+    <div class="btns">
+      <button class="primary" id="play">Play</button>
+      <button id="gen">New take</button>
+      <button id="save">Save PNG</button>
+    </div>
+    <div class="row"><input type="checkbox" id="loop"><span>Loop playback</span></div>
+    <div class="row" style="opacity:.6">Seed: <span id="seedv"></span> (only small timing/volume feel)</div>
+    <div class="box"><h2>Settings from the name</h2><div id="info"></div></div>
+    <div class="box"><h2>Legend (one dot = one beat of a loop)</h2><div id="leg"></div>
+      <div style="margin-top:8px;opacity:.75">Each ring is one letter, first letter in the middle. Read clockwise from the top. A dot nearer the inside has a smaller number. Short ticks mark the start of each bar. Drums: kick every beat, snare on 2 and 4, hi-hat on the "and".</div></div>
+    <div class="box"><h2>Sections</h2><div id="map"></div></div>
+  </div>
+  <div id="stage"><canvas id="cv"></canvas></div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const MODES = [['Ionian',[0,2,4,5,7,9,11]],['Dorian',[0,2,3,5,7,9,10]],['Phrygian',[0,1,3,5,7,8,10]],
+  ['Lydian',[0,2,4,6,7,9,11]],['Mixolydian',[0,2,4,5,7,9,10]],['Aeolian',[0,2,3,5,7,8,10]]];
+const PC = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const hz = m => 440*Math.pow(2,(m-69)/12);
+const CIRC = 'M1 0A1 1 0 1 0-1 0A1 1 0 1 0 1 0Z';
+const PATHS = {rest:CIRC, note:CIRC, hat:'M0-1.25L1.15 .95H-1.15Z', ghost:'M-1-1H1V1H-1Z', both:'M0-1.3L1.1 0L0 1.3L-1.1 0Z'};
+const P2D = {}; for(const k in PATHS) P2D[k] = new Path2D(PATHS[k]);
+const kindOf = v => v === 0 ? 'rest' : v%15 === 0 ? 'both' : v%3 === 0 ? 'hat' : v%5 === 0 ? 'ghost' : 'note';
+$('leg').innerHTML = [['rest','Rest: value 0, bass and lead silent'],['note','Note: bass and lead play'],
+  ['hat','Note + extra hi-hats (multiple of 3)'],['ghost','Note + ghost snare (multiple of 5)'],['both','Note + both (multiple of 15)']]
+  .map(([k,t]) => `<div class="lg"><svg width="22" height="22" viewBox="-1.5 -1.5 3 3"><path d="${PATHS[k]}" ${k==='rest'?'fill="none" stroke="#ddd" stroke-width=".35"':'fill="#ddd"'}/></svg><span>${t}</span></div>`).join('');
+
+let seed = Math.floor(Math.random()*99999), song = {}, secs = [], rings = [], total = 0;
+let ctx, master, noiseB, startT = 0, playing = false, lastRing = -2, lastKey = '', seqEls = [], prevEl = null;
+
+function mulberry32(a){ return () => { a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+function loopOf(n){   // Fibonacci mod n, until it returns to (0,1)
+  if(n === 1) return [0];
+  const s = []; let a = 0, b = 1;
+  do { s.push(a); [a,b] = [b,(a+b)%n]; } while(!(a === 0 && b === 1));
+  return s;
+}
+function parse(name){
+  const t = [];
+  for(const ch of name.toLowerCase()){
+    if(ch >= 'a' && ch <= 'z') t.push({ch, n: ch.charCodeAt(0)-96});
+    else if(t.length && !t[t.length-1].gap) t.push({gap:true});
+  }
+  while(t.length && t[t.length-1].gap) t.pop();
+  return t;
+}
+const chordNames = d => [0,2,4].map(o => PC[(song.root + song.iv[(d+o)%7]) % 12]);
+
+function build(){
+  const toks = parse($('name').value), nums = toks.filter(t => !t.gap).map(t => t.n);
+  secs = []; rings = [];
+  if(!nums.length){ total = 0; $('info').textContent = ''; $('map').textContent = ''; $('nameDisp').textContent = ''; return; }
+  const sum = nums.reduce((a,b) => a+b, 0), mode = MODES[nums[0]%6];
+  song = {sum, bpm: 80 + sum%80, root: sum%12, mode: mode[0], iv: mode[1], det: nums.length};
+  let b = 0, li = 0, html = '';
+  for(const tk of toks){
+    if(tk.gap){ secs.push({gap:true, bars:1, start:b}); b += 4; continue; }
+    const seq = loopOf(tk.n), bars = Math.ceil(seq.length/4);
+    const sc = {...tk, li: li++, seq, P: seq.length, bars, start: b, cyc: tk.n%4 + 1, depth: tk.n/26,
+      chords: Array.from({length:bars}, (_,i) => seq[4*i] % 7)};
+    secs.push(sc); rings.push(sc); b += bars*4;
+    html += `${tk.ch} = ${tk.n} · loop ${sc.P} beats · ${bars} bars · wobble ${sc.cyc}×/bar, depth ${sc.depth.toFixed(2)}<br>`;
+  }
+  total = b;
+  const sec = Math.round(b*60/song.bpm);
+  $('map').innerHTML = html;
+  $('info').innerHTML = `sum of letters = ${sum}<br>tempo = 80 + (${sum} mod 80) = ${song.bpm} BPM<br>root = ${sum} mod 12 = ${song.root} → ${PC[song.root]}<br>`
+    + `scale = ${nums[0]} mod 6 = ${nums[0]%6} → ${song.mode}<br>notes: ${song.iv.map(i => PC[(song.root+i)%12]).join(' ')}<br>`
+    + `chord detune = ${song.det} letters → ±${song.det} cents<br>length = ${b/4} bars ≈ ${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`;
+  $('seedv').textContent = seed;
+  let k = 0;
+  $('nameDisp').innerHTML = [...$('name').value].map(ch => /[a-z]/i.test(ch) ? `<span data-r="${k++}">${ch}</span>` : '&nbsp;').join('');
+  lastRing = -2; lastKey = '';
+}
+
+// ---------- sound ----------
+function tone(type, f, t0, dur, vol, f2, lp){
+  const o = ctx.createOscillator(), g = ctx.createGain(); let out = g;
+  o.type = type; o.frequency.setValueAtTime(f, t0);
+  if(f2) o.frequency.exponentialRampToValueAtTime(f2, t0+dur);
+  g.gain.setValueAtTime(.0001, t0); g.gain.linearRampToValueAtTime(vol, t0+.008); g.gain.exponentialRampToValueAtTime(.001, t0+dur);
+  o.connect(g);
+  if(lp){ const fl = ctx.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.value = lp; g.connect(fl); out = fl; }
+  out.connect(master); o.start(t0); o.stop(t0+dur+.05);
+}
+function noise(t0, dur, vol, ft, fr){
+  if(!noiseB){ noiseB = ctx.createBuffer(1, ctx.sampleRate*.5, ctx.sampleRate); const d = noiseB.getChannelData(0); for(let i=0;i<d.length;i++) d[i] = Math.random()*2-1; }
+  const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+  s.buffer = noiseB; f.type = ft; f.frequency.value = fr;
+  g.gain.setValueAtTime(vol, t0); g.gain.exponentialRampToValueAtTime(.001, t0+dur);
+  s.connect(f); f.connect(g); g.connect(master); s.start(t0); s.stop(t0+dur+.02);
+}
+const kick = (t,v) => tone('sine', 150, t, .22, .9*v, 42);
+const snare = (t,v) => { noise(t, .15, v, 'bandpass', 1800); tone('triangle', 190, t, .1, v*.6, 120); };
+const hat = (t,v) => noise(t, .04, v, 'highpass', 7000);
+
+function stop(){ if(master){ master.disconnect(); master = null; } playing = false; $('play').textContent = 'Play'; }
+async function play(){
+  stop(); build(); if(!secs.length) return;
+  ctx = ctx || new (window.AudioContext||window.webkitAudioContext)();
+  await ctx.resume();
+  master = ctx.createGain(); master.gain.value = .55; master.connect(ctx.destination);
+  const rnd = mulberry32(seed), bd = 60/song.bpm, sd = bd/4, iv = song.iv, root = song.root, det = song.det;
+  startT = ctx.currentTime + .15;
+  const T = (beat, step = 0) => startT + beat*bd + step*sd;
+  const bassMidi = v => 36 + root + iv[v%7] + 12*(Math.floor(v/7)%2);
+  for(const sc of secs){
+    let trem = null;
+    if(!sc.gap){
+      trem = ctx.createGain(); trem.gain.value = 1 - sc.depth/2; trem.connect(master);
+      const l = ctx.createOscillator(), lg = ctx.createGain();
+      l.frequency.value = sc.cyc/(4*bd); lg.gain.value = sc.depth/2;
+      l.connect(lg); lg.connect(trem.gain); l.start(T(sc.start)); l.stop(T(sc.start + sc.bars*4) + .1);
+    }
+    for(let bar = 0; bar < sc.bars; bar++){
+      const b0 = sc.start + bar*4;
+      if(!sc.gap){   // pad: 3 chord notes x 3 detuned saws, fade in over a beat
+        const d = sc.chords[bar], t0 = T(b0), t1 = T(b0+4);
+        const f = ctx.createBiquadFilter(), g = ctx.createGain();
+        f.type = 'lowpass'; f.frequency.value = 1600;
+        g.gain.setValueAtTime(.0001, t0); g.gain.linearRampToValueAtTime(.035, t0+bd);
+        g.gain.setValueAtTime(.035, t1-bd*.4); g.gain.exponentialRampToValueAtTime(.001, t1+.05);
+        f.connect(g); g.connect(trem);
+        [0,2,4].forEach(o => {
+          const m = 48 + root + iv[(d+o)%7] + 12*Math.floor((d+o)/7);
+          [-det,0,det].forEach(c => { const os = ctx.createOscillator(); os.type = 'sawtooth'; os.frequency.value = hz(m); os.detune.value = c; os.connect(f); os.start(t0); os.stop(t1+.1); });
+        });
+      }
+      for(let k = 0; k < 4; k++){
+        const g = b0 + k, i = bar*4 + k, v = (!sc.gap && i < sc.P) ? sc.seq[i] : null;
+        const vel = .85 + rnd()*.3, dt = (rnd()-.5)*.016, t = T(g) + dt;
+        kick(t, vel);
+        if(k === 1 || k === 3) snare(t, .4*vel);
+        hat(T(g,2) + dt, .14*vel);
+        if(v > 0 && v%3 === 0){ hat(T(g,1) + dt, .09*vel); hat(T(g,3) + dt, .09*vel); }
+        if(v > 0 && v%5 === 0) snare(T(g,3) + dt, .15*vel);
+        if(v > 0){
+          tone('sawtooth', hz(bassMidi(v)), t, bd*.9, .3*vel, 0, 500);                                  // bass on the beat
+          tone('square', hz(bassMidi(v) + 24), T(g,2) + dt, [1,2,4][v%3]*sd*.95, .07*vel);              // lead on the "and"
+        }
+      }
+    }
+  }
+  playing = true; $('play').textContent = 'Stop';
+}
+
+// ---------- drawing ----------
+const cv = $('cv'), c = cv.getContext('2d');
+function size(){ const d = devicePixelRatio||1, r = cv.getBoundingClientRect(); cv.width = r.width*d; cv.height = r.height*d; }
+addEventListener('resize', size);
+function shape(kind, x, y, s, col){
+  c.save(); c.translate(x,y); c.scale(s,s);
+  if(kind === 'rest'){ c.strokeStyle = col; c.lineWidth = .35; c.stroke(P2D.rest); } else { c.fillStyle = col; c.fill(P2D[kind]); }
+  c.restore();
+}
+
+function updateUI(cur){
+  let si = -1; if(cur >= 0) si = secs.findIndex(s => cur >= s.start && cur < s.start + s.bars*4);
+  const sc = secs[si], bi = sc ? Math.floor(cur - sc.start) : -1, key = si + ':' + bi;
+  if(key === lastKey) return;
+  lastKey = key;
+  if(si !== lastRing){
+    lastRing = si; prevEl = null;
+    const li = sc && !sc.gap ? sc.li : -1;
+    document.querySelectorAll('#nameDisp span').forEach(s => s.classList.toggle('on', +s.dataset.r === li));
+    if(li >= 0){ $('seq').innerHTML = sc.seq.map(v => `<span>${v}</span>`).join(' '); seqEls = [...$('seq').children]; }
+    else { $('seq').innerHTML = ''; seqEls = []; }
+  }
+  if(!sc){ $('now').textContent = playing ? '' : 'Press Play'; return; }
+  if(sc.gap){ $('now').textContent = 'Pause between words: drums only'; return; }
+  if(prevEl) prevEl.classList.remove('cur');
+  prevEl = seqEls[bi] || null; if(prevEl) prevEl.classList.add('cur');
+  const bar = Math.floor(bi/4), d = sc.chords[bar], v = bi < sc.P ? sc.seq[bi] : null;
+  $('now').innerHTML = `Letter <b>${sc.ch.toUpperCase()}</b> = ${sc.n} · bar ${bar+1} of ${sc.bars}<br>Chord: ${chordNames(d).join(' ')} (root ${PC[(song.root+song.iv[d])%12]})<br>`
+    + (v === null ? 'Padding beat: bass and lead rest' : `Value ${v} → bass ${v ? PC[(song.root+song.iv[v%7])%12] : 'rest'}${v && v%3 === 0 ? ' · extra hi-hats' : ''}${v && v%5 === 0 ? ' · ghost snare' : ''}`);
+}
+
+function frame(){
+  const W = cv.width, H = cv.height, S = Math.min(W,H), cx = W/2, cy = H/2;
+  c.globalAlpha = 1; c.fillStyle = '#0c0b10'; c.fillRect(0,0,W,H);
+  let cur = -1;
+  if(playing && ctx.state === 'running'){
+    cur = (ctx.currentTime - startT)/(60/song.bpm);
+    if(cur > total + 1){ if($('loop').checked) play(); else stop(); cur = -1; }
+  }
+  updateUI(cur);
+  const R = rings.length;
+  if(R){
+    const r0 = S*.08, r1 = S*.44, rw = (r1-r0)/R, sz = Math.max(3, S/210);
+    rings.forEach((sc,k) => {
+      const base = r0 + (k+.5)*rw, P = sc.P, n = sc.n;
+      const isCur = playing && cur >= sc.start && cur < sc.start + sc.bars*4;
+      const upcoming = playing && cur < sc.start;
+      const curIdx = isCur ? Math.floor(cur - sc.start) : P;
+      const col = `hsl(${n/26*300} 75% 62%)`;
+      c.globalAlpha = isCur ? .35 : .1; c.strokeStyle = '#fff'; c.lineWidth = 1;
+      c.beginPath(); c.arc(cx,cy,base,0,7); c.stroke();
+      const pts = sc.seq.map((v,i) => {
+        const a = -Math.PI/2 + 2*Math.PI*i/P, off = n > 1 ? (v/(n-1)-.5)*rw*.8 : 0;
+        return {x: cx+(base+off)*Math.cos(a), y: cy+(base+off)*Math.sin(a), a, v, i};
+      });
+      c.globalAlpha = upcoming ? .06 : .15; c.strokeStyle = '#fff'; c.lineWidth = 1;
+      pts.forEach(p => { if(p.i%4) return; c.beginPath();
+        c.moveTo(cx+(base-rw*.45)*Math.cos(p.a), cy+(base-rw*.45)*Math.sin(p.a));
+        c.lineTo(cx+(base+rw*.45)*Math.cos(p.a), cy+(base+rw*.45)*Math.sin(p.a)); c.stroke(); });
+      c.globalAlpha = upcoming ? .1 : .25; c.strokeStyle = col; c.lineWidth = Math.max(1,S/800);
+      c.beginPath(); pts.forEach((p,i) => i ? c.lineTo(p.x,p.y) : c.moveTo(p.x,p.y)); c.closePath(); c.stroke();
+      pts.forEach(p => { c.globalAlpha = upcoming ? .25 : (isCur && p.i > curIdx ? .4 : 1); shape(kindOf(p.v), p.x, p.y, sz, col); });
+      if(isCur && curIdx < P){
+        const p = pts[curIdx], a = p.a;
+        c.globalAlpha = .8; c.strokeStyle = '#fff'; c.lineWidth = Math.max(1.5,S/500);
+        c.beginPath(); c.moveTo(cx+(base-rw/2)*Math.cos(a), cy+(base-rw/2)*Math.sin(a));
+        c.lineTo(cx+(base+rw/2)*Math.cos(a), cy+(base+rw/2)*Math.sin(a)); c.stroke();
+        c.globalAlpha = .9; c.beginPath(); c.arc(p.x,p.y,sz*2,0,7); c.stroke();
+      }
+    });
+  }
+  requestAnimationFrame(frame);
+}
+
+$('name').addEventListener('input', () => { stop(); build(); });
+$('play').addEventListener('click', () => playing ? stop() : play());
+$('gen').addEventListener('click', () => { seed = Math.floor(Math.random()*99999); if(playing) play(); else build(); });
+$('save').addEventListener('click', () => cv.toBlob(b => {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(b);
+  a.download = `${$('name').value.trim().replace(/\s+/g,'-')}-song.png`; a.click();
+}));
+size(); build(); frame();
+</script>
+</body>
+</html>
