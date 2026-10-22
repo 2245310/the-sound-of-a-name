@@ -4,7 +4,7 @@ A small generative project that turns any name into a **song** and a **picture**
 
 Type a name, press Play, and watch and listen. Every name makes something different.
 
-**Live version:** https://github.com/2245310/the-sound-of-a-name
+**Live version:** https://2245310.github.io/the-sound-of-a-name/
 
 ## The idea
 
